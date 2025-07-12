@@ -1,114 +1,40 @@
-from fastapi import FastAPI, HTTPException
-import logging
 import os
-import platform
-import uvicorn
-
-# Import from scrapper
-from scrapper import lens_service, LensRequest, LensResponse
-
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, HttpUrl
+from typing import Literal, Optional
+try:
+    from .agent_browser import lens_search
+except ImportError:
+    from agent_browser import lens_search
 
 app = FastAPI(title="Google Lens API", version="1.0.0")
 
 
-@app.post("/search", response_model=LensResponse)
-async def search_lens(request: LensRequest):
-    """Search Google Lens with image URL"""
+class SearchRequest(BaseModel):
+    image_url: HttpUrl
+    search_type: Optional[Literal["visual_matches",
+                                  "exact_matches", "all", "both"]] = "all"
+
+
+@app.post("/search")
+async def search_lens(request: SearchRequest):
     try:
-        logger.info(f"Received search request for: {request.image_url}")
-        result = lens_service.search_image(
-            str(request.image_url), request.search_type)
-        return result
+        results = await lens_search(str(request.image_url), request.search_type or "all")
+        return {"success": True, **results, "search_type": request.search_type or "all"}
     except Exception as e:
-        logger.error(f"API error: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Agent error: {str(e)}")
+
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "service": "Google Lens API"}
 
 
 @app.get("/")
 async def root():
-    """Root endpoint"""
-    try:
-        return {
-            "message": "Welcome to Google Lens API",
-            "status": "healthy",
-            "service": "Google Lens API",
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e)
-        }
-
-
-@app.get("/health")
-async def health_check():
-    """Health check endpoint"""
-    try:
-        chrome_status = "installed" if lens_service.chrome_installed else "not installed"
-        system_info = lens_service.system_info
-
-        return {
-            "status": "healthy",
-            "service": "Google Lens API",
-            "chrome_status": chrome_status,
-            "system": system_info['system'],
-            "architecture": system_info['machine'],
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e)
-        }
-
-@app.get("/docs")
-async def docs():
-    """API Documentation"""
-    try:
-        return {
-            "message": "Welcome to Google Lens API",
-            "status": "healthy",
-            "service": "Google Lens API",
-            "apis": [
-                {
-                    "name": "Search Google Lens",
-                    "url": "/search",
-                    "method": "POST",
-                    "parameters": {
-                        "image_url": "Image URL",
-                        "search_type": "exact_matches, visual_matches (default all)"
-                    },
-                    "description": "Search Google Lens with image URL"
-                }
-            ]
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e)
-        }
-
-@app.get("/system-info")
-async def get_system_info():
-    """Get system information"""
-    return {
-        "system_info": lens_service.system_info,
-        "chrome_installed": lens_service.chrome_installed,
-    }
+    return {"status": "healthy", "service": "Google Lens API"}
 
 if __name__ == "__main__":
-    # Get port from environment variable or default to 8000
-    port = int(os.getenv("PORT", 8000))
-    host = os.getenv("HOST", "0.0.0.0")
-
-    print(f"Starting FastAPI server on {host}:{port}")
-    print(f"System: {platform.system()} {platform.machine()}")
-    print(f"API Documentation: http://{host}:{port}/docs")
-    print(f"Health Check: http://{host}:{port}/health")
-
-    uvicorn.run("app:app", host=host, port=port, reload=True)
+    import uvicorn
+    port = int(os.getenv("PORT", 8081))
+    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=True)

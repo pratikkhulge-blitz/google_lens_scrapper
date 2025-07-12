@@ -1,75 +1,90 @@
-FROM ubuntu:22.04
+FROM python:3.12-slim
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV PYTHONUNBUFFERED=1
-ENV DISPLAY=:99
-ENV CHROME_BIN=/usr/bin/google-chrome
-ENV CHROME_PATH=/usr/bin/google-chrome
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/home/appuser/.cache/ms-playwright
 
-# Install system dependencies and Python 3.11
-RUN apt-get update && apt-get install -y \
-    software-properties-common \
-    curl \
-    gnupg \
+# Create non-root user for security
+RUN groupadd --gid 1000 appuser && \
+    useradd --uid 1000 --gid appuser --shell /bin/bash --create-home appuser
+
+# Install system dependencies in a single layer
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Essential tools
     wget \
-    unzip \
-    xvfb \
-    build-essential \
-    libssl-dev \
-    libffi-dev \
-    libbz2-dev \
-    libreadline-dev \
-    libsqlite3-dev \
-    libncursesw5-dev \
-    zlib1g-dev \
-    libgdbm-dev \
-    liblzma-dev \
-    tk-dev \
+    curl \
     ca-certificates \
-    && add-apt-repository ppa:deadsnakes/ppa && \
-    apt-get update && \
-    apt-get install -y python3.11 python3.11-venv python3.11-dev python3-pip
+    # Playwright dependencies
+    fonts-liberation \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libatspi2.0-0 \
+    libcups2 \
+    libdbus-1-3 \
+    libdrm2 \
+    libgbm1 \
+    libgtk-3-0 \
+    libgtk-4-1 \
+    libnspr4 \
+    libnss3 \
+    libwayland-client0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxkbcommon0 \
+    libxrandr2 \
+    libxss1 \
+    libxtst6 \
+    xvfb \
+    # Graphics libraries
+    libegl1 \
+    libgl1-mesa-dri \
+    libgl1-mesa-glx \
+    libgles2-mesa \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /tmp/* \
+    && rm -rf /var/tmp/*
 
-# Install Google Chrome
-RUN curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google.gpg && \
-    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list && \
-    apt-get update && \
-    apt-get install -y google-chrome-stable
+# Set working directory
+WORKDIR /google_lens_scrapper
 
-# Create appuser
-RUN groupadd -r appuser && useradd -r -g appuser -G audio,video appuser \
-    && mkdir -p /home/appuser/Downloads && \
-    chown -R appuser:appuser /home/appuser
-
-# Set up Chrome directories and permissions
-RUN mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
-
-# Set workdir
-WORKDIR /app
-
-# Copy Python dependencies and install
+# Copy requirements first for better Docker layer caching
 COPY requirements.txt .
-RUN python3.11 -m pip install --upgrade pip && \
+
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy the full app and fix ownership
-COPY . .
-RUN chown -R appuser:appuser /app
+# Install Playwright system dependencies as root first
+RUN playwright install-deps chromium
 
-# Switch to non-root user
+# Switch to non-root user to install Playwright browsers
 USER appuser
 
-# Create necessary Chrome dirs
-RUN mkdir -p /home/appuser/.config/google-chrome && \
-    mkdir -p /home/appuser/.cache/google-chrome && \
-    mkdir -p /home/appuser/.local/share/applications
+# Install Playwright browsers as the appuser (only the browser binaries)
+RUN playwright install chromium
+
+# Switch back to root to copy files and set permissions
+USER root
+
+# Copy application code
+COPY --chown=appuser:appuser . .
+
+# Create directories for data with proper permissions
+RUN mkdir -p /google_lens_scrapper/data /google_lens_scrapper/logs && \
+    chown -R appuser:appuser /google_lens_scrapper
+
+# Switch to non-root user for running the application
+USER appuser
 
 # Expose port
-EXPOSE 8000
+EXPOSE 8081
 
-# Healthcheck
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
-
-# Start your app
-CMD ["python3.11", "src/app.py"]
+# Use exec form for better signal handling
+CMD ["python", "-m", "uvicorn", "src.app:app", "--host", "0.0.0.0", "--port", "8081"]

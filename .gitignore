@@ -102,3 +102,6 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+script_cache.pkl
+selector_learning_data.json
